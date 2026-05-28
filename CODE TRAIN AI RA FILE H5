@@ -1,0 +1,67 @@
+from google.colab import drive
+import zipfile
+import os
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.models import Model
+
+
+drive.mount('/content/drive')
+
+zip_path = '/content/drive/MyDrive/Food_dataset.zip'
+extract_path = '/content/food_data'
+
+if os.path.exists(zip_path):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_path)
+    print("✅ Đã kết nối Drive và giải nén dữ liệu ảnh thành công!")
+else:
+    print(f"❌ Không tìm thấy file tại {zip_path}. Bạn hãy kiểm tra lại vị trí trên Drive nhé!")
+def find_data_dir(base_path):
+    subdirs = [os.path.join(base_path, d) for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+    if len(subdirs) > 2:
+        return base_path
+    if len(subdirs) == 1:
+        return find_data_dir(subdirs[0])
+    return base_path
+
+DATA_DIR = find_data_dir(extract_path)
+print(f"📂 Đường dẫn chính xác chứa 19 thư mục món ăn: {DATA_DIR}")
+datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20,
+    horizontal_flip=True,
+    validation_split=0.2
+)
+
+train_generator = datagen.flow_from_directory(
+    DATA_DIR, target_size=(224, 224), batch_size=32, class_mode='categorical', subset='training'
+)
+
+val_generator = datagen.flow_from_directory(
+    DATA_DIR, target_size=(224, 224), batch_size=32, class_mode='categorical', subset='validation'
+)
+
+labels = list(train_generator.class_indices.keys())
+print("🔢 Tổng số món ăn AI nhận diện được thực tế:", len(labels))
+print("📋 Danh sách các món ăn:", labels)
+base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False
+
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dense(128, activation='relu')(x)
+predictions = Dense(len(labels), activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=predictions)
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+print("🔄 AI đang học nhận diện các món ăn từ dữ liệu của bạn...")
+model.fit(
+    train_generator,
+    epochs=10,
+    validation_data=val_generator
+)
+model.save('my_food_cnn_model.h5')
+print("✅ Đã huấn luyện xong hoàn toàn và lưu mô hình thành file 'my_food_cnn_model.h5'!")
