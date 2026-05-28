@@ -1,3 +1,5 @@
+!pip install tf-keras
+!pip install reportlab
 import os, cv2, numpy as np, matplotlib.pyplot as plt, gradio as gr
 from tf_keras.models import load_model
 from PIL import Image, ImageOps
