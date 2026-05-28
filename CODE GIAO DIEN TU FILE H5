@@ -1,0 +1,211 @@
+import os, cv2, numpy as np, matplotlib.pyplot as plt, gradio as gr
+from tf_keras.models import load_model
+from PIL import Image, ImageOps
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+np.set_printoptions(suppress=True)
+try:
+    model = load_model("my_food_cnn_model.h5", compile=False)
+    class_names = [line.strip() for line in open("menu_food.txt", "r").readlines()]
+except Exception as e:
+    print("Khong tim thay model!")
+    class_names = []
+
+QR_PATH = "/content/QR.jpg"
+PDF_OUTPUT_PATH = "hoa_don_khay_com.pdf"
+FONT_NAME = "Helvetica"
+
+PRICE_MAP = {
+    "ca": {"name": "Ca hu", "price": 30000},
+    "canh rau": {"name": "Canh rau", "price": 7000},
+    "canh chua": {"name": "Canh chua", "price": 10000},
+    "canh chua co ca": {"name": "Canh chua co ca", "price": 25000},
+    "com": {"name": "Com", "price": 10000},
+    "dau hu": {"name": "Dau hu sot ca", "price": 25000},
+    "rau": {"name": "Rau xao", "price": 10000},
+    "suon": {"name": "Suon", "price": 30000},
+    "thit kho": {"name": "Thit kho", "price": 25000},
+    "thit kho trung": {"name": "Thit kho trung", "price": 30000},
+    "trung": {"name": "Trung chien", "price": 25000},
+}
+
+def generate_pdf_invoice(items, total_amount):
+    doc = SimpleDocTemplate(PDF_OUTPUT_PATH, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    story = []
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('InvoiceTitle', parent=styles['Heading1'], fontName=FONT_NAME, fontSize=20, leading=24, textColor=colors.HexColor('#1e293b'), alignment=1, spaceAfter=6)
+    subtitle_style = ParagraphStyle('InvoiceSubtitle', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.HexColor('#64748b'), alignment=1, spaceAfter=25)
+    text_style = ParagraphStyle('InvoiceText', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.HexColor('#334155'))
+    bold_style = ParagraphStyle('InvoiceTextBold', parent=styles['Normal'], fontName=FONT_NAME, fontSize=10, textColor=colors.HexColor('#0f172a'))
+    
+    story.append(Paragraph("HOA DON THANH TOAN", title_style))
+    story.append(Paragraph("AI SMART CANTEEN", subtitle_style))
+    
+    table_data = [[Paragraph("<b>Vi tri</b>", bold_style), Paragraph("<b>Ten mon</b>", bold_style), Paragraph("<b>AI</b>", bold_style), Paragraph("<b>Gia</b>", bold_style)]]
+    for item in items:
+        table_data.append([Paragraph(item['slot'], text_style), Paragraph(item['name'], text_style), Paragraph(f"{item['confidence']:.1f}%", text_style), Paragraph(f"{item['price']:,.0f} VND", text_style)])
+    table_data.append([Paragraph("<b>TONG</b>", bold_style), "", "", Paragraph(f"<b>{total_amount:,.0f} VND</b>", bold_style)])
+    
+    invoice_table = Table(table_data, colWidths=[80, 200, 100, 120])
+    invoice_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f8fafc')),
+        ('LINEBELOW', (0,0), (-1,-2), 0.5, colors.HexColor('#e2e8f0')),
+        ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor('#1e293b')),
+        ('TOPPADDING', (0,0), (-1,-1), 10),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+    ]))
+    
+    story.append(invoice_table)
+    story.append(Spacer(1, 30))
+    story.append(Paragraph("Cam on quy khach!", subtitle_style))
+    doc.build(story)
+    return PDF_OUTPUT_PATH
+
+def process_and_bill(input_img):
+    if input_img is None:
+        return (None, "<h3>Vui long chup anh!</h3>", None, None)
+        
+    original_image = Image.fromarray(input_img).convert("RGB")
+    boxes_config = [(390, 120, 780, 700), (1030, 120, 1560, 700), (330, 700, 700, 980), (760, 670, 1230, 1030), (1290, 670, 1650, 980)]
+    
+    total_bill = 0
+    pdf_items = []
+    html = "<div style='background:#0f172a; padding:25px; border-radius:20px; color:white; font-family:Segoe UI;'><h2 style='text-align:center;color:#a855f7;'>HOA DON THANH TOAN</h2><hr>"
+    
+    debug_img = np.array(original_image).copy()
+    for (x1, y1, x2, y2) in boxes_config:
+        cv2.rectangle(debug_img, (x1, y1), (x2, y2), (0,255,0), 5)
+    Image.fromarray(debug_img).save("debug_slots.png")
+    
+    fig, axes = plt.subplots(1, 5, figsize=(16,4))
+    
+    for i, (left, upper, right, lower) in enumerate(boxes_config):
+        crop = original_image.crop((left, upper, right, lower))
+        processed = ImageOps.fit(crop, (224, 224), Image.Resampling.LANCZOS)
+        image_array = np.asarray(processed)
+        normalized = (image_array.astype(np.float32) / 127.5) - 1
+        
+        data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+        data[0] = normalized
+        
+        try:
+            prediction = model.predict(data, verbose=0)
+            index = np.argmax(prediction)
+            confidence = float(prediction[0][index]) * 100
+            raw_class_name = class_names[index]
+            parts = raw_class_name.split(" ", 1)
+            label_key = parts[1].strip() if len(parts) > 1 else raw_class_name
+        except:
+            label_key = "Unknown"
+            confidence = 0
+            
+        if label_key in PRICE_MAP:
+            dish_name = PRICE_MAP[label_key]["name"]
+            price = PRICE_MAP[label_key]["price"]
+        else:
+            dish_name = label_key
+            price = 0
+            
+        total_bill += price
+        pdf_items.append({"slot": f"Ngan {i+1}", "name": dish_name, "confidence": confidence, "price": price})
+        
+        html += f"<div style='display:flex; justify-content:space-between; margin-bottom:12px; padding:10px; background:#1e293b; border-radius:10px;'><div><div style='font-weight:bold;font-size:16px;'>{dish_name}</div><div style='font-size:12px;color:#94a3b8;'>Ngan {i+1} | AI: {confidence:.1f}%</div></div><div style='font-weight:bold; color:#a855f7;'>{price:,.0f} VND</div></div>"
+        
+        axes[i].imshow(crop)
+        axes[i].set_title(dish_name, fontsize=10)
+        axes[i].axis("off")
+        
+    html += f"<hr><div style='display:flex; justify-content:space-between; font-size:24px; font-weight:bold;'><div>TONG:</div><div style='color:#a855f7;'>{total_bill:,.0f} VND</div></div></div>"
+    
+    plt.tight_layout()
+    plt.savefig("temp_crops.png", bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    
+    result_crops_img = Image.open("temp_crops.png")
+    qr_image = Image.open(QR_PATH) if os.path.exists(QR_PATH) else Image.new("RGB", (300,300), color="white")
+    pdf_file_path = generate_pdf_invoice(pdf_items, total_bill)
+    
+    return (result_crops_img, html, qr_image, pdf_file_path)
+
+custom_css = """
+body { background: radial-gradient(circle at top left,#312e81,#0f172a 45%,#020617); font-family:'Segoe UI',sans-serif; overflow-x:hidden; }
+.gradio-container { max-width:1800px !important; background:transparent !important; padding:25px !important; box-shadow:none !important; }
+.hero { padding:35px; border-radius:35px; background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.04)); backdrop-filter:blur(20px); border: 1px solid rgba(255,255,255,.15); box-shadow: 0 15px 50px rgba(0,0,0,.35); margin-bottom:25px; }
+.hero-title { font-size:70px; font-weight:900; text-align:center; background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:2px; }
+.hero-sub { text-align:center; font-size:22px; margin-top:10px; color:#cbd5e1; }
+.live-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:18px; margin-top:28px; }
+.live-card { background: rgba(255,255,255,.08); padding:22px; border-radius:22px; text-align:center; color:white; backdrop-filter:blur(12px); border: 1px solid rgba(255,255,255,.1); transition:.3s; }
+.live-card:hover { transform:translateY(-5px); background: rgba(255,255,255,.12); }
+.live-icon { font-size:34px; margin-bottom:10px; }
+.live-label { font-size:16px; color:#cbd5e1; }
+.live-value { font-size:22px; font-weight:800; margin-top:8px; }
+.camera-panel { background: linear-gradient(145deg, rgba(15,23,42,.9), rgba(30,41,59,.7)); padding:25px; border-radius:35px; backdrop-filter:blur(18px); border: 1px solid rgba(255,255,255,.08); box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+.section-title { font-size:30px; font-weight:800; color:white; margin-bottom:20px; }
+.scan-btn { height:90px !important; border:none !important; border-radius:30px !important; font-size:32px !important; font-weight:900 !important; background: linear-gradient(135deg, #06b6d4, #3b82f6, #8b5cf6) !important; color:white !important; box-shadow: 0 12px 40px rgba(59,130,246,.45); transition:.35s; }
+.scan-btn:hover { transform: translateY(-6px) scale(1.02); box-shadow: 0 18px 45px rgba(99,102,241,.6); }
+.receipt-panel { background: linear-gradient(145deg, rgba(255,255,255,.95), rgba(248,250,252,.92)); padding:28px; border-radius:35px; box-shadow: 0 15px 45px rgba(0,0,0,.22); height:100%; }
+.receipt-title { font-size:42px; font-weight:900; text-align:center; margin-bottom:18px; background: linear-gradient(90deg, #0f172a, #334155); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.analysis-panel { margin-top:22px; background: rgba(255,255,255,.06); padding:20px; border-radius:25px; border: 1px solid rgba(255,255,255,.08); }
+footer { visibility:hidden; }
+img { border-radius:22px !important; }
+.file-preview { border-radius:20px !important; overflow:hidden !important; }
+"""
+with gr.Blocks(
+    title="AI Smart Canteen",
+    css=custom_css
+) as demo:
+    gr.HTML("""
+    <div class='hero'>
+        <div class='hero-title'>
+            AI SMART CANTEEN
+        </div>
+        <div class='hero-sub'>
+            Future Self-Service Food Recognition System
+        </div>
+        <div class='live-grid'>
+            <div class='live-card'>
+                <div class='live-icon'>🤖</div>
+                <div class='live-label'>AI ENGINE</div>
+                <div class='live-value'>ONLINE</div>
+            </div>
+            <div class='live-card'>
+                <div class='live-icon'>📷</div>
+                <div class='live-label'>CAMERA</div>
+                <div class='live-value'>READY</div>
+            </div>
+            <div class='live-card'>
+                <div class='live-icon'>⚡</div>
+                <div class='live-label'>PROCESSING</div>
+                <div class='live-value'>REALTIME</div>
+            </div>
+            <div class='live-card'>
+                <div class='live-icon'>💳</div>
+                <div class='live-label'>PAYMENT</div>
+                <div class='live-value'>QR ENABLED</div>
+            </div>
+        </div>
+    </div>
+    """)
+    with gr.Row():
+        with gr.Column(scale=7):
+            gr.HTML("<div class='camera-panel'><div class='section-title'>📸 FOOD TRAY SCANNER</div></div>")
+            camera = gr.Image(sources=["webcam", "upload"], type="numpy", label="", height=720)
+            gr.HTML("<br>")
+            btn = gr.Button("🚀 START AI SCAN", elem_classes="scan-btn")
+            gr.HTML("<br>")
+            gr.HTML("<div class='analysis-panel'><div class='section-title'>🧠 AI DETECTION RESULT</div></div>")
+            output_crops = gr.Image(label="", height=280)
+        with gr.Column(scale=5):
+            gr.HTML("<div class='receipt-panel'><div class='receipt-title'>DIGITAL RECEIPT</div></div>")
+            output_html = gr.HTML()
+            gr.HTML("<br>")
+            output_qr = gr.Image(label="💳 PAYMENT QR", height=320)
+            gr.HTML("<br>")
+            output_pdf = gr.File(label="📄 DOWNLOAD INVOICE")
+    btn.click(fn=process_and_bill, inputs=camera, outputs=[output_crops, output_html, output_qr, output_pdf])
+if __name__ == "__main__":
+    demo.launch(share=True, debug=True)
